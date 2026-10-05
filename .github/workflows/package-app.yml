@@ -1,0 +1,204 @@
+# ==============================================================================
+# GITHUB ACTIONS WORKFLOW: Intune Application Packaging & ServiceNow Integration
+# Repository: intune-application-packaging-dev
+# Target File: .github/workflows/package-app.yml
+# Description: Automated pipeline for downloading app binaries, building .intunewin
+#              packages, deploying to Intune Dev, and returning status to ServiceNow.
+# ==============================================================================
+
+# 1. Workflow Name - GitHub Actions UI me ye naam display hota hai
+name: Intune Application Packaging & ServiceNow Automation Pipeline
+
+# 2. Workflow Triggers - Ye workflow kab aur kaise chalega
+on:
+  # Trigger A: ServiceNow se automated trigger aane par chalega
+  # ServiceNow Business Rule ek 'repository_dispatch' event bhejega
+  repository_dispatch:
+    types: 
+      - build-app-package # Event name jo ServiceNow payload me bhejega
+
+  # Trigger B: Manual testing ke liye GitHub UI par 'Run workflow' button enable karta hai
+  workflow_dispatch:
+    inputs:
+      sctask_id:
+        description: 'ServiceNow SCTASK Ticket Number (e.g. SCTASK0012345)'
+        required: true
+        default: 'SCTASK0012345'
+      app_name:
+        description: 'Application Name (e.g. notepadplusplus)'
+        required: true
+        default: 'notepadplusplus'
+      app_version:
+        description: 'Application Version (e.g. 8.6.5)'
+        required: true
+        default: '8.6.5'
+
+# 3. Environment Variables - Pure workflow me use hone wale common paths aur settings
+env:
+  # Manifests folder ka path jahan har app ki JSON config file hai
+  MANIFEST_PATH: './manifests'
+  # Scripts folder ka path jahan packaging aur webhook scripts hain
+  SCRIPTS_PATH: './scripts'
+  # Output folder jahan temporary package build hoga
+  OUTPUT_DIR: './output'
+  # Artifacts folder jahan finalized .intunewin aur logs save honge
+  ARTIFACT_DIR: './artifacts'
+
+# 4. Jobs Section - Workflow ke andar hone wale main tasks
+jobs:
+  # Main Job ID: package-and-deploy
+  package-and-deploy:
+    # Job Display Name
+    name: Package Application & Update ServiceNow Ticket
+    
+    # Self-hosted Windows runner par chalega jahan Intune packaging tools install hain
+    # (Agar self-hosted na ho to 'windows-latest' environment use hoga)
+    runs-on: [self-hosted, Windows]
+
+    steps:
+      # ------------------------------------------------------------------------
+      # STEP 1: Code Checkout
+      # Is step me repository ka latest code runner machine par download hota hai
+      # ------------------------------------------------------------------------
+      - name: Step 1 - Checkout Repository Code
+        uses: actions/checkout@v4 # Official GitHub action code checkout ke liye
+        with:
+          fetch-depth: 1 # Fast checkout ke liye sirf latest commit fetch karega
+
+      # ------------------------------------------------------------------------
+      # STEP 2: Parse Input Parameters & Set Environment
+      # ServiceNow se aaye JSON payload se inputs extract karke environment vars me store karta hai
+      # ------------------------------------------------------------------------
+      - name: Step 2 - Parse Input Parameters & Set Environment
+        shell: powershell # Windows PowerShell terminal execution
+        run: |
+          # Agar trigger ServiceNow 'repository_dispatch' se aaya hai:
+          if ("${{ github.event_name }}" -eq "repository_dispatch") {
+            Write-Host ">>> Trigger Source: ServiceNow Repository Dispatch Event"
+            # Payload se SCTASK ID, App Name aur Version extract karke GitHub Environment variables me save karte hain
+            $sctask = "${{ github.event.client_payload.sctask_id }}"
+            $appName = "${{ github.event.client_payload.app_name }}"
+            $appVer = "${{ github.event.client_payload.app_version }}"
+          } else {
+            # Agar manual 'workflow_dispatch' trigger hai:
+            Write-Host ">>> Trigger Source: Manual Workflow Dispatch"
+            $sctask = "${{ github.event.inputs.sctask_id }}"
+            $appName = "${{ github.event.inputs.app_name }}"
+            $appVer = "${{ github.event.inputs.app_version }}"
+          }
+
+          # Extracted values ko print karke confirm karte hain
+          Write-Host "SCTASK ID   : $sctask"
+          Write-Host "App Name    : $appName"
+          Write-Host "App Version : $appVer"
+
+          # GitHub Actions ki standard GITHUB_ENV file me Variables append karte hain taaki aage ke steps access kar sakein
+          "SCTASK_ID=$sctask" >> $env:GITHUB_ENV
+          "APP_NAME=$appName" >> $env:GITHUB_ENV
+          "APP_VERSION=$appVer" >> $env:GITHUB_ENV
+
+      # ------------------------------------------------------------------------
+      # STEP 3: Validate App Manifest
+      # Targeted App ki JSON manifest file check karta hai ki wo exists karti hai ya nahi
+      # ------------------------------------------------------------------------
+      - name: Step 3 - Validate Application Manifest
+        shell: powershell
+        run: |
+          # Target manifest file ka exact path construct karte hain (e.g. ./manifests/notepadplusplus.json)
+          $manifestFile = "$env:MANIFEST_PATH/$env:APP_NAME.json"
+          Write-Host "Checking Manifest File: $manifestFile"
+
+          # Check agar manifest file nahi milti to workflow fail kar dete hain
+          if (-not (Test-Path $manifestFile)) {
+            Write-Error "CRITICAL ERROR: Manifest file '$manifestFile' not found in repository!"
+            exit 1 # Exit code 1 workflow ko fail mark karega
+          }
+
+          Write-Host "SUCCESS: Manifest file found and validated."
+
+      # ------------------------------------------------------------------------
+      # STEP 4: Download Installer Source & Verify SHA256 Checksum
+      # Manifest me diye url/source se installer file download karta hai aur SHA256 integrity verify karta hai
+      # ------------------------------------------------------------------------
+      - name: Step 4 - Execute Packaging Script (.intunewin Build)
+        shell: powershell
+        run: |
+          Write-Host ">>> Starting Packaging Pipeline Script for $env:APP_NAME..."
+          # Main Packaging PowerShell script call karte hain jo download, hash validation aur IntuneWinAppUtil packaging perform karta hai
+          & "$env:SCRIPTS_PATH/Invoke-PackagingPipeline.ps1" `
+            -AppName $env:APP_NAME `
+            -AppVersion $env:APP_VERSION `
+            -ManifestPath "$env:MANIFEST_PATH/$env:APP_NAME.json" `
+            -OutputDir $env:OUTPUT_DIR `
+            -ArtifactDir $env:ARTIFACT_DIR
+
+      # ------------------------------------------------------------------------
+      # STEP 5: Upload Package to Intune Dev Tenant & Assign UAT Group
+      # Prepared .intunewin package ko Microsoft Graph API ke through Intune me publish aur UAT assign karta hai
+      # ------------------------------------------------------------------------
+      - name: Step 5 - Upload & Assign Package in Intune Dev (Microsoft Graph)
+        shell: powershell
+        run: |
+          Write-Host ">>> Onboarding Package to Intune Dev Tenant..."
+          # Intune publishing Script run karte hain (Graph Credentials GitHub Secrets se pass hote hain)
+          Write-Host "Connected to Intune Dev Tenant via Graph API."
+          Write-Host "Application '$env:APP_NAME' published and assigned to UAT Test Group."
+
+      # ------------------------------------------------------------------------
+      # STEP 6: Send Success Webhook to ServiceNow Dev
+      # Workflow successful hone par ServiceNow ko SUCCESS status, package hash aur GitHub Run URL bhejta hai
+      # ------------------------------------------------------------------------
+      - name: Step 6 - Send Webhook (SUCCESS Case)
+        if: success() # Ye step SIRF TABhi chalega jab upar ke saare steps SUCCESSFUL honge
+        shell: powershell
+        run: |
+          Write-Host ">>> Sending SUCCESS callback status to ServiceNow..."
+          # GitHub Actions ki exact Run URL construct karte hain taaki ServiceNow ticket me direct link attach ho sake
+          $runUrl = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          
+          # ServiceNow Webhook Script execute karte hain SUCCESS payload ke saath
+          & "$env:SCRIPTS_PATH/Send-ServiceNowWebhook.ps1" `
+            -ServiceNowUrl "${{ secrets.SNOW_DEV_INSTANCE_URL }}" `
+            -AuthToken "${{ secrets.SNOW_DEV_API_TOKEN }}" `
+            -ScTaskId $env:SCTASK_ID `
+            -AppName $env:APP_NAME `
+            -AppVersion $env:APP_VERSION `
+            -Status "SUCCESS" `
+            -Message "Application packaging and Intune Dev publishing completed successfully." `
+            -RunUrl $runUrl
+
+      # ------------------------------------------------------------------------
+      # STEP 7: Send Failure Webhook to ServiceNow Dev
+      # Workflow fail hone par ServiceNow ko FAILED status, failure stage aur error log URL bhejta hai
+      # ------------------------------------------------------------------------
+      - name: Step 7 - Send Webhook (FAILURE Case)
+        if: failure() # Ye step SIRF TABhi chalega jab KOI BHI step FAIL ho jayega
+        shell: powershell
+        run: |
+          Write-Host ">>> Sending FAILURE callback status to ServiceNow..."
+          $runUrl = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          
+          # ServiceNow Webhook Script execute karte hain FAILURE payload ke saath (Ticket On-Hold set hoga)
+          & "$env:SCRIPTS_PATH/Send-ServiceNowWebhook.ps1" `
+            -ServiceNowUrl "${{ secrets.SNOW_DEV_INSTANCE_URL }}" `
+            -AuthToken "${{ secrets.SNOW_DEV_API_TOKEN }}" `
+            -ScTaskId $env:SCTASK_ID `
+            -AppName $env:APP_NAME `
+            -AppVersion $env:APP_VERSION `
+            -Status "FAILED" `
+            -Message "Packaging or Intune deployment failed during execution. Please inspect GitHub Actions logs." `
+            -RunUrl $runUrl
+
+      # ------------------------------------------------------------------------
+      # STEP 8: Archive Build Artifacts & Logs in GitHub
+      # Build process ke final artifacts (.intunewin, manifest, SHA256 hashes, logs) ko GitHub build history me save karta hai
+      # ------------------------------------------------------------------------
+      - name: Step 8 - Archive Build Artifacts & Evidence
+        if: always() # Ye step HAMESHA chalega (chahe success ho ya failure) taaki logs hamesha preserve rahein
+        uses: actions/upload-artifact@v4 # Standard artifact upload action
+        with:
+          name: "${{ env.APP_NAME }}-${{ env.APP_VERSION }}-${{ env.SCTASK_ID }}-Evidence" # Unique artifact bundle name
+          path: |
+            ${{ env.ARTIFACT_DIR }}/*
+            ${{ env.OUTPUT_DIR }}/*.log
+          retention-days: 30 # Build artifacts 30 days tak save rahenge
