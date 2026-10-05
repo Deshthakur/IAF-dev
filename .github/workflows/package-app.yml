@@ -53,7 +53,7 @@ jobs:
     
     # Self-hosted Windows runner par chalega jahan Intune packaging tools install hain
     # (Agar self-hosted na ho to 'windows-latest' environment use hoga)
-    runs-on: [self-hosted, Windows]
+    runs-on: windows-latest
 
     steps:
       # ------------------------------------------------------------------------
