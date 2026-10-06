@@ -8,7 +8,7 @@
   "description": "Notepad++ free source code editor and Notepad replacement.",
   "setupFile": "npp.8.6.5.Installer.x64.exe",
   "downloadUrl": "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.6.5/npp.8.6.5.Installer.x64.exe",
-  "expectedSha256": "C5C4D81B85D3B8B82B5B0F1C1D82490A093D89E4647D0E6983A899C5E5D8F0A2",
+  "expectedSha256": "EEDF45E0803CE36C4B745E54FC7A7136D9B364C2A795E646548A4350CF88A366",
   "installCommand": "npp.8.6.5.Installer.x64.exe /S",
   "uninstallCommand": "\"%ProgramFiles%\\Notepad++\\uninstall.exe\" /S",
   "detectionRule": {
